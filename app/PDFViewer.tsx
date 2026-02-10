@@ -901,47 +901,64 @@ export default function PDFViewer() {
       }
     }
 
-    // Calculate Y offset to the anchor page
-    let pageOffsetY = 0;
-    for (let i = 1; i < anchorPageNum; i++) {
-      const pageRef = pageRefs.current.get(i);
-      if (pageRef) {
-        pageOffsetY += pageRef.offsetHeight + 32; // 32px = gap-8 between pages
-      }
-    }
+    const pageRef = pageRefs.current.get(anchorPageNum);
+    if (!pageRef || !containerRef) return { top: 0, left: 0, showAbove: false };
 
-    const PICKER_HEIGHT = 200;
-    const PICKER_WIDTH = 256;
-    const HEADER_HEIGHT = 48; // h-12 = 48px
-    const CONTAINER_PADDING = 24; // py-6 = 24px
+    const PICKER_HEIGHT = 44; // actual rendered height of the single-button picker
+    const PICKER_WIDTH = 256; // w-64
+    const HEADER_HEIGHT = 48; // h-12 sticky header
+    const GAP = 8;
 
-    // Position within PDF container (relative to container start)
-    const belowY = pageOffsetY + anchorRect.y + anchorRect.height + 8;
-    const aboveY = pageOffsetY + anchorRect.y - 8;
+    // Use live DOM measurements for accurate positioning
+    const pageBounds = pageRef.getBoundingClientRect();
+    const containerBounds = containerRef.getBoundingClientRect();
 
-    // Convert to screen position to check viewport fit
-    const containerTop = HEADER_HEIGHT + CONTAINER_PADDING;
-    const screenBelowY = containerTop + belowY - window.scrollY;
-    const screenAboveY = containerTop + aboveY - window.scrollY - PICKER_HEIGHT;
+    // Selection position in screen/viewport coordinates
+    const selScreenTop = pageBounds.top + anchorRect.y;
+    const selScreenBottom = selScreenTop + anchorRect.height;
+    const selScreenCenterX = pageBounds.left + anchorRect.x + anchorRect.width / 2;
+
+    // Use live viewport height for accuracy
+    const vpHeight = window.innerHeight;
 
     // Check viewport fit
-    const fitsBelow = screenBelowY + PICKER_HEIGHT <= viewportHeight;
-    const fitsAbove = screenAboveY >= HEADER_HEIGHT;
+    const fitsBelow = selScreenBottom + GAP + PICKER_HEIGHT <= vpHeight;
+    const fitsAbove = selScreenTop - GAP - PICKER_HEIGHT >= HEADER_HEIGHT;
 
-    // Decide direction (prefer below, but flip if needed)
-    const showAbove = !fitsBelow && fitsAbove;
-    const top = showAbove ? aboveY : belowY;
+    // Choose direction; if neither fits, center picker on the selection
+    let showAbove = false;
+    let screenY: number;
+    if (fitsBelow) {
+      screenY = selScreenBottom + GAP;
+    } else if (fitsAbove) {
+      showAbove = true;
+      screenY = selScreenTop - GAP; // translateY(-100%) will push it above this point
+    } else {
+      // Neither fits — center on the selection (OK to cover it)
+      screenY = (selScreenTop + selScreenBottom) / 2 - PICKER_HEIGHT / 2;
+    }
 
-    // Horizontal: ensure picker stays within bounds
-    // Center horizontally on the rect, but clamp to keep picker fully visible
-    const centerX = anchorRect.x + anchorRect.width / 2;
+    // Final safety clamp: guarantee picker stays within visible viewport
+    if (showAbove) {
+      // Picker extends upward from screenY (translateY(-100%)), so it occupies [screenY - PICKER_HEIGHT, screenY]
+      screenY = Math.max(HEADER_HEIGHT + GAP + PICKER_HEIGHT, Math.min(screenY, vpHeight - GAP));
+    } else {
+      // Picker extends downward from screenY, so it occupies [screenY, screenY + PICKER_HEIGHT]
+      screenY = Math.max(HEADER_HEIGHT + GAP, Math.min(screenY, vpHeight - PICKER_HEIGHT - GAP));
+    }
+
+    // Convert screen coordinates to container-relative for absolute positioning
+    const top = screenY - containerBounds.top;
+
+    // Horizontal: center on selection, clamped to container bounds
+    const relCenterX = selScreenCenterX - containerBounds.left;
     const left = Math.max(
-      PICKER_WIDTH / 2, // Don't go off left edge (since we use translateX(-50%))
-      Math.min(centerX, pageWidth - PICKER_WIDTH / 2) // Don't go off right edge
+      PICKER_WIDTH / 2, // don't go off left edge (translateX(-50%))
+      Math.min(relCenterX, containerBounds.width - PICKER_WIDTH / 2)
     );
 
     return { top, left, showAbove };
-  }, [pageWidth, viewportHeight]);
+  }, [containerRef, viewportHeight]);
 
   return (
     <div

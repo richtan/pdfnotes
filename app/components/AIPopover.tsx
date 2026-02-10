@@ -2,6 +2,9 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Markdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import type { Selection, ChatMessage } from '../hooks/useSelection';
 
 interface AIPopoverProps {
@@ -381,7 +384,7 @@ export function AIPopover({
                     <p className="text-sm">{message.content}</p>
                   ) : (
                     <div className="text-sm prose prose-sm dark:prose-invert prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 max-w-none prose-p:text-foreground prose-headings:text-foreground prose-strong:text-foreground prose-code:text-foreground">
-                      <Markdown>{message.content}</Markdown>
+                      <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{message.content}</Markdown>
                     </div>
                   )}
                 </div>
