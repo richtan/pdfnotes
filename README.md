@@ -1,36 +1,89 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PDF Notes
+
+AI-powered PDF reader that lets you select text or screenshot regions and ask questions about them. Built with Next.js, Gemini, and react-pdf.
+
+## Features
+
+- **Text & area selection** -- highlight text or screenshot any region of a PDF, then ask AI about it
+- **Streaming chat** -- responses stream in real-time with full Markdown and LaTeX math rendering
+- **Multi-turn conversations** -- follow-up questions with full context preserved
+- **Multiple selections per chat** -- attach several selections to a single conversation
+- **Tabs** -- open multiple PDFs side by side, drag to reorder, state persists per tab
+- **Drag & drop** -- drop PDF files directly into the app, or paste a URL
+- **Dark mode** -- toggle between light and dark themes
+- **Zoom** -- 50%--200% with 10% increments
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 20+
+- A [Google AI Studio](https://aistudio.google.com/apikey) API key
+
+### Setup
+
+```bash
+git clone <repo-url>
+cd pdfnotes
+npm install
+```
+
+Create a `.env` file:
+
+```
+GEMINI_API_KEY=your-api-key-here
+```
+
+### Run
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How It Works
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Upload a PDF (file picker, drag & drop, or URL)
+2. Select text or use the screenshot tool to capture a region
+3. Click **New Chat** to start a conversation about your selection
+4. Ask follow-up questions or add more selections to the same chat
 
-## Learn More
+Chats appear in a sidebar anchored to the location of the selection on the page. Each chat is minimizable and persists across tab switches.
 
-To learn more about Next.js, take a look at the following resources:
+## Tech Stack
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Layer | Technology |
+|-------|-----------|
+| Framework | Next.js 16 (App Router) |
+| UI | React 19, Tailwind CSS 4 |
+| PDF | react-pdf / pdfjs-dist |
+| AI | Google Gemini (`gemini-3-flash-preview`) via `@google/genai` |
+| Markdown | react-markdown, remark-math, rehype-katex |
+| Drag & drop | @dnd-kit |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Project Structure
 
-## Deploy on Vercel
+```
+app/
+├── api/
+│   ├── ask/route.ts              # Streaming chat endpoint
+│   └── generate-title/route.ts   # Auto-generates chat titles
+├── components/
+│   ├── AIPopover.tsx             # Chat UI (messages, input, streaming)
+│   ├── AreaSelector.tsx          # Screenshot selection tool
+│   ├── ChatPicker.tsx            # "New Chat" picker on selection
+│   └── SelectionLayer.tsx        # Text selection overlay
+├── hooks/
+│   └── useSelection.ts          # Selection & chat history state
+├── lib/
+│   └── gemini.ts                # Gemini client & model config
+├── PDFViewer.tsx                 # Main viewer (tabs, pages, sidebar)
+├── page.tsx                      # App entry point
+├── layout.tsx                    # Root layout
+└── globals.css                   # Global styles
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## License
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT
