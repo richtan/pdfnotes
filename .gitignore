@@ -36,6 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# pdf.js copied assets
+public/cmaps/
+public/standard_fonts/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

@@ -9,6 +9,7 @@ export interface Selection {
   rectsByPage?: Map<number, DOMRect[]>; // Rects grouped by page number for multi-page selections
   pageNumber: number; // Primary page (for chat window positioning)
   imageBase64?: string;
+  scale: number; // Zoom level when selection was made (for accurate highlight rendering at different zooms)
   timestamp: number;
 }
 
@@ -60,7 +61,8 @@ export function useSelection() {
     rect: DOMRect,
     pageNumber: number,
     rects?: DOMRect[],
-    rectsByPage?: Map<number, DOMRect[]>
+    rectsByPage?: Map<number, DOMRect[]>,
+    scale: number = 1
   ) => {
     setCurrentSelection({
       id: crypto.randomUUID(),
@@ -70,11 +72,12 @@ export function useSelection() {
       rects,
       rectsByPage,
       pageNumber,
+      scale,
       timestamp: Date.now(),
     });
   }, []);
 
-  const setAreaSelection = useCallback((rect: DOMRect, pageNumber: number, imageBase64: string, text?: string) => {
+  const setAreaSelection = useCallback((rect: DOMRect, pageNumber: number, imageBase64: string, text?: string, scale: number = 1) => {
     setCurrentSelection({
       id: crypto.randomUUID(),
       type: 'area',
@@ -82,6 +85,7 @@ export function useSelection() {
       rect,
       pageNumber,
       imageBase64,
+      scale,
       timestamp: Date.now(),
     });
   }, []);

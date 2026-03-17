@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -41,6 +41,7 @@ export function AIPopover({
   const [generatedTitle, setGeneratedTitle] = useState<string | null>(null);
   const hasBeenLoadingRef = useRef(false);
   const hasGeneratedTitleRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Notify parent when loading state changes (but not on initial mount)
   useEffect(() => {
@@ -120,10 +121,16 @@ export function AIPopover({
     return () => container.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Abort streaming on unmount
+  useEffect(() => {
+    return () => { abortControllerRef.current?.abort(); };
+  }, []);
+
   // Handle escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        abortControllerRef.current?.abort();
         onMessagesUpdate(messages);
         onClose();
       }
@@ -139,9 +146,11 @@ export function AIPopover({
     // Reset auto-scroll when sending a new message
     shouldAutoScrollRef.current = true;
 
+    const isFirstUserMessage = !messages.some(m => m.role === 'user');
     const userMessage: ChatMessage = {
       role: 'user',
       content: input.trim(),
+      ...(isFirstUserMessage ? { selections: [...selections] } : {}),
     };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
@@ -159,6 +168,9 @@ export function AIPopover({
       pageNumber: sel.pageNumber,
     }));
 
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     try {
       const response = await fetch('/api/ask', {
         method: 'POST',
@@ -168,6 +180,7 @@ export function AIPopover({
           contexts,
           conversationHistory: messages,
         }),
+        signal: abortController.signal,
       });
 
       if (!response.ok) {
@@ -205,11 +218,16 @@ export function AIPopover({
         generateTitle(finalMessages);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-      // Remove the user message if there was an error
-      setMessages(messages);
-      onMessagesUpdate(messages);
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Aborted — keep partial messages as-is, don't show error
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+        // Remove the user message if there was an error
+        setMessages(messages);
+        onMessagesUpdate(messages);
+      }
     } finally {
+      abortControllerRef.current = null;
       setIsLoading(false);
     }
   }, [input, isLoading, messages, selections, onMessagesUpdate]);
@@ -259,36 +277,47 @@ export function AIPopover({
     >
       {/* Title bar - click to toggle */}
       <div
-        className={`px-3 py-2.5 cursor-pointer transition-colors shrink-0 flex items-center gap-2 ${
+        className={`shrink-0 flex items-center gap-0 ${
           isMinimized
-            ? 'hover:bg-muted/50'
-            : 'bg-muted/50 border-b border-border hover:bg-muted'
+            ? ''
+            : 'bg-muted/50 border-b border-border'
         }`}
-        onClick={() => {
-          onMessagesUpdate(messages);
-          onToggleMinimize?.();
-        }}
       >
-        <svg
-          className={`w-3 h-3 text-muted-foreground shrink-0 transition-transform duration-200 ${isMinimized ? '' : 'rotate-90'}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+        <button
+          className={`flex-1 min-w-0 px-3 py-2.5 cursor-pointer transition-colors flex items-center gap-2 text-left ${
+            isMinimized
+              ? 'hover:bg-muted/50'
+              : 'hover:bg-muted'
+          }`}
+          onClick={() => {
+            onMessagesUpdate(messages);
+            onToggleMinimize?.();
+          }}
+          aria-expanded={!isMinimized}
+          aria-label={`Chat: ${titleText}`}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-        <p className="text-sm text-foreground truncate font-medium flex-1">
-          {titleText}
-        </p>
+          <svg
+            className={`w-3 h-3 text-muted-foreground shrink-0 transition-transform duration-200 ${isMinimized ? '' : 'rotate-90'}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          <span className="text-sm text-foreground truncate font-medium flex-1">
+            {titleText}
+          </span>
+        </button>
         {/* Close button */}
         <button
           onClick={(e) => {
             e.stopPropagation();
+            abortControllerRef.current?.abort();
             onMessagesUpdate(messages);
             onClose();
           }}
-          className="w-5 h-5 rounded hover:bg-foreground/10 text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors"
-          title="Remove"
+          className="w-5 h-5 rounded hover:bg-foreground/10 text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors mr-2"
+          aria-label="Close chat"
         >
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 interface AreaSelectorProps {
   containerRef: HTMLDivElement | null;
   pageNumber: number;
+  isDarkMode: boolean;
   onSelect: (rect: DOMRect, pageNumber: number, imageBase64: string) => void;
   onCancel: () => void;
 }
@@ -19,6 +20,7 @@ interface DrawingRect {
 export function AreaSelector({
   containerRef,
   pageNumber,
+  isDarkMode,
   onSelect,
   onCancel,
 }: AreaSelectorProps) {
@@ -52,14 +54,14 @@ export function AreaSelector({
       ctx.clearRect(x, y, width, height);
 
       // Draw border
-      ctx.strokeStyle = '#18181b';
+      ctx.strokeStyle = isDarkMode ? '#18181b' : '#3b82f6';
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 4]);
       ctx.strokeRect(x, y, width, height);
 
       // Draw corner handles
       const handleSize = 6;
-      ctx.fillStyle = '#18181b';
+      ctx.fillStyle = isDarkMode ? '#18181b' : '#3b82f6';
       ctx.setLineDash([]);
       ctx.fillRect(x - handleSize/2, y - handleSize/2, handleSize, handleSize);
       ctx.fillRect(x + width - handleSize/2, y - handleSize/2, handleSize, handleSize);

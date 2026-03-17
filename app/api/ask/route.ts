@@ -166,23 +166,18 @@ export async function POST(request: NextRequest) {
         parts: contextParts,
       });
     } else {
-      // Follow-up message - include context reference and conversation history
-      const contextParts = buildContextParts();
-
-      contents.push({
-        role: 'user',
-        parts: contextParts,
-      });
-
-      if (!hasImages) {
-        contents.push({
-          role: 'model',
-          parts: [{ text: 'I understand. I\'ll help you with questions about these selections.' }],
-        });
+      // Follow-up message - context already in first exchange, just send summary + history
+      const textSummary = textContexts.map((ctx, i) =>
+        `[Context ${i + 1}, page ${ctx.pageNumber}]: "${ctx.text?.slice(0, 100)}..."`
+      ).join('\n');
+      if (textSummary) {
+        contents.push({ role: 'user', parts: [{ text: `Reference context:\n${textSummary}` }] });
+        contents.push({ role: 'model', parts: [{ text: 'I understand the context. How can I help?' }] });
       }
 
-      // Add conversation history (map 'assistant' -> 'model' for Gemini)
-      for (const msg of conversationHistory) {
+      // Truncate to last 20 messages to avoid token limits
+      const recentHistory = conversationHistory.slice(-20);
+      for (const msg of recentHistory) {
         contents.push({
           role: msg.role === 'assistant' ? 'model' : 'user',
           parts: [{ text: msg.content }],
@@ -208,13 +203,18 @@ export async function POST(request: NextRequest) {
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
-        for await (const chunk of stream) {
-          const content = chunk.text;
-          if (content) {
-            controller.enqueue(encoder.encode(content));
+        try {
+          for await (const chunk of stream) {
+            const content = chunk.text;
+            if (content) {
+              controller.enqueue(encoder.encode(content));
+            }
           }
+        } catch (error) {
+          controller.enqueue(encoder.encode('\n\n[Error: Response was interrupted]'));
+        } finally {
+          controller.close();
         }
-        controller.close();
       },
     });
 

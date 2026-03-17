@@ -42,6 +42,7 @@ const options = {
 };
 
 const resizeObserverOptions = {};
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 const PDF_WIDTH_PERCENT = 65;
 const SIDEBAR_WIDTH_PERCENT = 35;
 const EXPAND_CURRENT = 'current'; // Special value meaning "expand the current selection's chat"
@@ -51,6 +52,7 @@ interface Tab {
   file: File | string | null; // File object, URL string, or null for empty tab
   name: string;
   numPages?: number;
+  loadError?: string;
   // Store chat state per tab
   history: HistoryItem[];
   currentSelection: Selection | null;
@@ -101,11 +103,13 @@ function SortableTab({ tab, isActive, onSelect, onClose }: SortableTabProps) {
       <svg className="w-3 h-3 shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
       </svg>
-      <span className="max-w-24 truncate">{tab.name}</span>
+      <span className="max-w-24 truncate" title={tab.name}>{tab.name}</span>
       <span
         onClick={onClose}
         onPointerDown={(e) => e.stopPropagation()}
         className="w-4 h-4 flex items-center justify-center rounded hover:bg-foreground/10 opacity-0 group-hover:opacity-100 transition-opacity"
+        role="button"
+        aria-label={`Close ${tab.name}`}
       >
         <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -122,7 +126,7 @@ function TabOverlay({ tab }: { tab: Tab }) {
       <svg className="w-3 h-3 shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
       </svg>
-      <span className="max-w-24 truncate">{tab.name}</span>
+      <span className="max-w-24 truncate" title={tab.name}>{tab.name}</span>
     </div>
   );
 }
@@ -151,7 +155,13 @@ export default function PDFViewer() {
   const [scale, setScale] = useState(1);
   const [containerRef, setContainerRef] = useState<HTMLElement | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>();
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('pdfnotes-dark-mode');
+      return saved !== null ? saved === 'true' : true;
+    }
+    return true;
+  });
   const [viewportHeight, setViewportHeight] = useState(600);
 
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -183,7 +193,7 @@ export default function PDFViewer() {
   // Track if current selection is generating
   const isCurrentGeneratingRef = useRef(false);
   // Track selections that are still generating (kept mounted in background until done)
-  const [generatingSelections, setGeneratingSelections] = useState<Map<string, { selection: Selection; messages: ChatMessage[] }>>(new Map());
+  const [generatingSelections, setGeneratingSelections] = useState<Map<string, { selection: Selection; messages: ChatMessage[]; chatNumber: number }>>(new Map());
 
   // Page dropdown state
   const [currentVisiblePage, setCurrentVisiblePage] = useState(1);
@@ -230,6 +240,11 @@ export default function PDFViewer() {
     window.addEventListener('resize', updateHeight);
     return () => window.removeEventListener('resize', updateHeight);
   }, []);
+
+  // Persist dark mode preference
+  useEffect(() => {
+    localStorage.setItem('pdfnotes-dark-mode', String(isDarkMode));
+  }, [isDarkMode]);
 
   // Calculate chat count per page
   const getChatsPerPage = useCallback(() => {
@@ -305,6 +320,16 @@ export default function PDFViewer() {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
+  }, [isPageDropdownOpen]);
+
+  // Close page dropdown on Escape
+  useEffect(() => {
+    if (!isPageDropdownOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsPageDropdownOpen(false);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
   }, [isPageDropdownOpen]);
 
   // Save current tab state before switching
@@ -396,7 +421,14 @@ export default function PDFViewer() {
     const { files } = event.target;
     if (!files || files.length === 0) return;
 
-    const fileArray = Array.from(files);
+    const fileArray = Array.from(files).filter(file => {
+      if (file.size > MAX_FILE_SIZE) {
+        alert(`File "${file.name}" is too large (${Math.round(file.size / 1024 / 1024)}MB). Maximum size is 100MB.`);
+        return false;
+      }
+      return true;
+    });
+    if (fileArray.length === 0) return;
     const currentTab = tabs.find(t => t.id === activeTabId);
     const isCurrentTabEmpty = currentTab && !currentTab.file;
 
@@ -462,6 +494,13 @@ export default function PDFViewer() {
     e.preventDefault();
     const url = urlInput.trim();
     if (!url) return;
+
+    try {
+      new URL(url);
+    } catch {
+      alert('Please enter a valid URL (e.g., https://example.com/document.pdf)');
+      return;
+    }
 
     // Extract filename from URL or use a default name
     let name = 'PDF from URL';
@@ -532,8 +571,9 @@ export default function PDFViewer() {
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    dragCounter.current--;
-    if (dragCounter.current === 0) {
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
       setIsDraggingFile(false);
     }
   }, []);
@@ -551,7 +591,13 @@ export default function PDFViewer() {
 
     const files = Array.from(e.dataTransfer.files).filter(
       file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-    );
+    ).filter(file => {
+      if (file.size > MAX_FILE_SIZE) {
+        alert(`File "${file.name}" is too large (${Math.round(file.size / 1024 / 1024)}MB). Maximum size is 100MB.`);
+        return false;
+      }
+      return true;
+    });
 
     if (files.length === 0) return;
 
@@ -710,13 +756,14 @@ export default function PDFViewer() {
         rects: primaryRects,
         rectsByPage,
         pageNumber: primaryPageNumber,
+        scale,
         timestamp: Date.now(),
       };
 
       // Set as pending selection (user will choose which chat to add it to)
       setPendingSelection(newSelection);
     }
-  }, [isAreaSelectMode]);
+  }, [isAreaSelectMode, scale]);
 
   const handleAreaSelect = useCallback((rect: DOMRect, pageNumber: number, imageBase64: string) => {
     // Create the new selection object
@@ -727,13 +774,14 @@ export default function PDFViewer() {
       rect,
       pageNumber,
       imageBase64,
+      scale,
       timestamp: Date.now(),
     };
 
     // Set as pending selection (user will choose which chat to add it to)
     setPendingSelection(newSelection);
     toggleAreaSelectMode(true); // Force off
-  }, [toggleAreaSelectMode]);
+  }, [toggleAreaSelectMode, scale]);
 
   const handleAreaCancel = useCallback(() => {
     toggleAreaSelectMode(true); // Force off
@@ -752,6 +800,7 @@ export default function PDFViewer() {
           next.set(currentSelection.id, {
             selection: currentSelection,
             messages: [...currentMessagesRef.current],
+            chatNumber: currentChatNumber!,
           });
           return next;
         });
@@ -806,7 +855,7 @@ export default function PDFViewer() {
       const item = prev.get(selectionId);
       if (item) {
         // Move to history - messages should already have selections attached
-        addToHistory(messages);
+        addToHistory(messages, undefined, item.chatNumber);
         // Remove from generating
         const next = new Map(prev);
         next.delete(selectionId);
@@ -853,6 +902,18 @@ export default function PDFViewer() {
     currentMessagesRef.current = messages;
   }, []);
 
+  // Zoom handler that preserves scroll position
+  const handleZoom = useCallback((newScale: number) => {
+    const scrollY = window.scrollY;
+    const docHeight = document.documentElement.scrollHeight;
+    const scrollRatio = docHeight > 0 ? scrollY / docHeight : 0;
+    setScale(newScale);
+    requestAnimationFrame(() => {
+      const newDocHeight = document.documentElement.scrollHeight;
+      window.scrollTo(0, scrollRatio * newDocHeight);
+    });
+  }, []);
+
   // Calculate page width - use available container width minus padding
   const pageWidth = ((containerWidth || 800) - 32) * scale;
 
@@ -865,19 +926,20 @@ export default function PDFViewer() {
   }, []);
 
   // Calculate Y position for a selection relative to the document start
-  const getSelectionYPosition = useCallback((selection: { pageNumber: number; rect: DOMRect }) => {
+  const getSelectionYPosition = useCallback((selection: { pageNumber: number; rect: DOMRect; scale?: number }) => {
     let offsetTop = 0;
-    // Add heights of all pages before this one (plus 32px gap between pages)
+    // Add heights of all pages before this one (plus 24px gap between pages — gap-6 = 1.5rem = 24px)
     for (let i = 1; i < selection.pageNumber; i++) {
       const pageRef = pageRefs.current.get(i);
       if (pageRef) {
-        offsetTop += pageRef.offsetHeight + 32;
+        offsetTop += pageRef.offsetHeight + 24;
       }
     }
-    // Add the selection's position within its page
-    offsetTop += selection.rect.y;
+    // Add the selection's position within its page (adjusted for zoom changes)
+    const zoomRatio = selection.scale ? scale / selection.scale : 1;
+    offsetTop += selection.rect.y * zoomRatio;
     return offsetTop;
-  }, []);
+  }, [scale]);
 
   // Calculate picker position for pending selection
   // Returns { top, left, showAbove } for positioning the chat picker
@@ -984,7 +1046,7 @@ export default function PDFViewer() {
       <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-sm">
         <div className="px-4 h-12 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <h1 className="text-sm font-medium text-foreground tracking-tight shrink-0">
+            <h1 className="text-base font-semibold text-foreground tracking-tight shrink-0">
               PDF Notes
             </h1>
 
@@ -1037,6 +1099,7 @@ export default function PDFViewer() {
                 }}
                 className="h-7 w-7 rounded hover:bg-muted text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors shrink-0"
                 title="New Tab"
+                aria-label="New tab"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
@@ -1104,8 +1167,9 @@ export default function PDFViewer() {
               {/* Zoom controls */}
               <div className="flex items-center">
                 <button
-                  onClick={() => setScale(s => Math.max(0.5, s - 0.1))}
+                  onClick={() => handleZoom(Math.max(0.5, scale - 0.1))}
                   className="h-8 w-8 rounded-md hover:bg-muted text-foreground flex items-center justify-center transition-colors"
+                  aria-label="Zoom out"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 12H4" />
@@ -1115,8 +1179,9 @@ export default function PDFViewer() {
                   {Math.round(scale * 100)}%
                 </span>
                 <button
-                  onClick={() => setScale(s => Math.min(2, s + 0.1))}
+                  onClick={() => handleZoom(Math.min(2, scale + 0.1))}
                   className="h-8 w-8 rounded-md hover:bg-muted text-foreground flex items-center justify-center transition-colors"
+                  aria-label="Zoom in"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
@@ -1144,6 +1209,7 @@ export default function PDFViewer() {
               <button
                 onClick={() => setIsDarkMode(d => !d)}
                 className="h-8 w-8 rounded-md hover:bg-muted text-foreground flex items-center justify-center transition-colors"
+                aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
               >
                 {isDarkMode ? (
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1163,7 +1229,7 @@ export default function PDFViewer() {
 
       {/* Main content */}
       <main className="relative">
-        {activeTab && !activeTab.file ? (
+        {!activeTab || !activeTab.file ? (
           /* Empty tab - show upload UI */
           <div className="flex flex-col items-center justify-center py-32 text-center">
             <div className="w-16 h-16 mb-6 text-muted-foreground/30">
@@ -1238,11 +1304,46 @@ export default function PDFViewer() {
                       pointerEvents: isActive ? 'auto' : 'none',
                     }}
                   >
+                    {tab.loadError ? (
+                      <div className="flex flex-col items-center justify-center py-32 text-center">
+                        <svg className="w-12 h-12 text-destructive mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                        </svg>
+                        <p className="text-foreground font-medium mb-1">Failed to load PDF</p>
+                        <p className="text-sm text-muted-foreground mb-4 max-w-sm">{tab.loadError}</p>
+                        <button
+                          onClick={() => {
+                            setTabs(prev => prev.map(t =>
+                              t.id === tab.id ? { ...t, loadError: undefined, file: t.file } : t
+                            ));
+                          }}
+                          className="h-9 px-4 bg-primary hover:bg-primary/90 text-primary-foreground rounded-md text-sm font-medium transition-colors"
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    ) : (
                     <Document
                       file={tab.file}
                       onLoadSuccess={onDocumentLoadSuccess(tab.id)}
+                      onLoadError={(error) => {
+                        setTabs(prev => prev.map(t =>
+                          t.id === tab.id ? { ...t, loadError: error.message } : t
+                        ));
+                      }}
                       options={options}
                       className="flex flex-col items-center gap-6"
+                      loading={
+                        <div className="flex items-center justify-center py-32">
+                          <div className="flex flex-col items-center gap-3 text-muted-foreground">
+                            <svg className="w-8 h-8 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                            <p className="text-sm">Loading PDF...</p>
+                          </div>
+                        </div>
+                      }
                     >
                       {tab.numPages ? Array.from(new Array(tab.numPages), (_el, index) => {
                         const pageNum = index + 1;
@@ -1264,6 +1365,7 @@ export default function PDFViewer() {
                               <AreaSelector
                                 containerRef={pageRefs.current.get(pageNum) || null}
                                 pageNumber={pageNum}
+                                isDarkMode={isDarkMode}
                                 onSelect={handleAreaSelect}
                                 onCancel={handleAreaCancel}
                               />
@@ -1292,12 +1394,22 @@ export default function PDFViewer() {
                                 return [];
                               };
 
+                              // Color palette for different chats
+                              const CHAT_COLORS = [
+                                { focused: 'bg-blue-500/30', unfocused: 'bg-blue-400/15 hover:bg-blue-400/25', areaFocused: 'border-blue-500 bg-blue-500/10', areaUnfocused: 'border-blue-400/50 bg-blue-400/5 hover:bg-blue-400/10' },
+                                { focused: 'bg-violet-500/30', unfocused: 'bg-violet-400/15 hover:bg-violet-400/25', areaFocused: 'border-violet-500 bg-violet-500/10', areaUnfocused: 'border-violet-400/50 bg-violet-400/5 hover:bg-violet-400/10' },
+                                { focused: 'bg-emerald-500/30', unfocused: 'bg-emerald-400/15 hover:bg-emerald-400/25', areaFocused: 'border-emerald-500 bg-emerald-500/10', areaUnfocused: 'border-emerald-400/50 bg-emerald-400/5 hover:bg-emerald-400/10' },
+                                { focused: 'bg-rose-500/30', unfocused: 'bg-rose-400/15 hover:bg-rose-400/25', areaFocused: 'border-rose-500 bg-rose-500/10', areaUnfocused: 'border-rose-400/50 bg-rose-400/5 hover:bg-rose-400/10' },
+                              ];
+
                               // Determine which selection to highlight based on focused chat
                               // isPending means it's a pending selection (dashed border)
-                              const selectionsToHighlight: Array<{ selection: typeof currentSelection, isFocused: boolean, isPending?: boolean, chatId?: string }> = [];
+                              const selectionsToHighlight: Array<{ selection: typeof currentSelection, isFocused: boolean, isPending?: boolean, chatId?: string, chatNumber?: number }> = [];
+                              const renderedIds = new Set<string>();
 
                               // Pending selection - distinct dashed style
-                              if (pendingSelection && hasRectsOnPage(pendingSelection)) {
+                              if (pendingSelection && hasRectsOnPage(pendingSelection) && !renderedIds.has(pendingSelection.id)) {
+                                renderedIds.add(pendingSelection.id);
                                 selectionsToHighlight.push({
                                   selection: pendingSelection,
                                   isFocused: true,
@@ -1306,10 +1418,12 @@ export default function PDFViewer() {
                               }
 
                               // Current selection - highlighted when its chat is focused (expandedChatId === EXPAND_CURRENT)
-                              if (currentSelection && hasRectsOnPage(currentSelection)) {
+                              if (currentSelection && hasRectsOnPage(currentSelection) && !renderedIds.has(currentSelection.id)) {
+                                renderedIds.add(currentSelection.id);
                                 selectionsToHighlight.push({
                                   selection: currentSelection,
-                                  isFocused: expandedChatId === EXPAND_CURRENT
+                                  isFocused: expandedChatId === EXPAND_CURRENT,
+                                  chatNumber: currentChatNumber ?? 0,
                                 });
                               }
 
@@ -1318,27 +1432,31 @@ export default function PDFViewer() {
                               history.forEach(item => {
                                 const allSelections = getAllSelectionsFromChat(item);
                                 allSelections.forEach(sel => {
-                                  if (hasRectsOnPage(sel)) {
+                                  if (hasRectsOnPage(sel) && !renderedIds.has(sel.id)) {
+                                    renderedIds.add(sel.id);
                                     selectionsToHighlight.push({
                                       selection: sel,
                                       isFocused: expandedChatId === item.id,
                                       chatId: item.id,
+                                      chatNumber: item.chatNumber,
                                     });
                                   }
                                 });
                               });
 
                               // Generating selections (background) - highlighted when their chat is focused
-                              generatingSelections.forEach(({ selection: genSelection }) => {
-                                if (hasRectsOnPage(genSelection)) {
+                              generatingSelections.forEach(({ selection: genSelection, chatNumber: genChatNum }) => {
+                                if (hasRectsOnPage(genSelection) && !renderedIds.has(genSelection.id)) {
+                                  renderedIds.add(genSelection.id);
                                   selectionsToHighlight.push({
                                     selection: genSelection,
-                                    isFocused: expandedChatId === genSelection.id
+                                    isFocused: expandedChatId === genSelection.id,
+                                    chatNumber: genChatNum,
                                   });
                                 }
                               });
 
-                              return selectionsToHighlight.map(({ selection, isFocused, isPending, chatId }) => {
+                              return selectionsToHighlight.map(({ selection, isFocused, isPending, chatId, chatNumber: cn }) => {
                                 if (!selection) return null;
 
                                 const handleMouseDown = (e: React.MouseEvent) => {
@@ -1354,25 +1472,24 @@ export default function PDFViewer() {
                                   setExpandedChatId(isCurrentSel ? EXPAND_CURRENT : (chatId || selection.id));
                                 };
 
-                                // Pending selections have dashed amber border (waiting for chat assignment)
-                                const pendingClasses = 'border-dashed border-2 border-amber-500 bg-amber-500/10';
-                                const focusedClasses = 'border-blue-500 bg-blue-500/10';
-                                const unfocusedClasses = 'border-blue-400/50 bg-blue-400/5 hover:bg-blue-400/10';
-                                const focusedTextClasses = 'bg-blue-500/30';
-                                const unfocusedTextClasses = 'bg-blue-400/15 hover:bg-blue-400/25';
-                                const pendingTextClasses = 'bg-amber-500/20';
+                                // Zoom ratio for accurate highlight positioning at different zoom levels
+                                const zoomRatio = selection.scale ? scale / selection.scale : 1;
 
-                                // Determine the appropriate class based on state
+                                // Pick color based on chat number
+                                const colorIdx = (cn ?? 0) % CHAT_COLORS.length;
+                                const colors = CHAT_COLORS[colorIdx];
+
+                                // Pending selections have dashed amber border (waiting for chat assignment)
                                 const getAreaClass = () => {
-                                  if (isPending) return pendingClasses;
-                                  if (isFocused) return focusedClasses;
-                                  return unfocusedClasses;
+                                  if (isPending) return 'border-dashed border-2 border-amber-500 bg-amber-500/10';
+                                  if (isFocused) return `${colors.areaFocused}`;
+                                  return `${colors.areaUnfocused}`;
                                 };
 
                                 const getTextClass = () => {
-                                  if (isPending) return pendingTextClasses;
-                                  if (isFocused) return focusedTextClasses;
-                                  return unfocusedTextClasses;
+                                  if (isPending) return 'bg-amber-500/20';
+                                  if (isFocused) return colors.focused;
+                                  return colors.unfocused;
                                 };
 
                                 if (selection.type === 'area') {
@@ -1384,10 +1501,10 @@ export default function PDFViewer() {
                                       onClick={handleClick}
                                       className={`absolute cursor-pointer rounded-sm border-2 transition-colors z-10 ${getAreaClass()}`}
                                       style={{
-                                        left: selection.rect.x,
-                                        top: selection.rect.y,
-                                        width: selection.rect.width,
-                                        height: selection.rect.height,
+                                        left: selection.rect.x * zoomRatio,
+                                        top: selection.rect.y * zoomRatio,
+                                        width: selection.rect.width * zoomRatio,
+                                        height: selection.rect.height * zoomRatio,
                                       }}
                                     />
                                   );
@@ -1402,10 +1519,10 @@ export default function PDFViewer() {
                                       onClick={handleClick}
                                       className={`absolute cursor-pointer transition-colors z-10 ${getTextClass()}`}
                                       style={{
-                                        left: r.x,
-                                        top: r.y,
-                                        width: r.width,
-                                        height: r.height,
+                                        left: r.x * zoomRatio,
+                                        top: r.y * zoomRatio,
+                                        width: r.width * zoomRatio,
+                                        height: r.height * zoomRatio,
                                       }}
                                     />
                                   ));
@@ -1416,6 +1533,7 @@ export default function PDFViewer() {
                         );
                       }) : null}
                     </Document>
+                    )}
                   </div>
                 );
               })}
@@ -1471,7 +1589,7 @@ export default function PDFViewer() {
               )}
 
               {/* Background generating selections (hidden but mounted to continue generation) */}
-              {Array.from(generatingSelections.values()).map(({ selection, messages }) => (
+              {Array.from(generatingSelections.values()).map(({ selection, messages, chatNumber: genChatNumber }) => (
                 <div
                   key={`generating-${selection.id}`}
                   className="absolute left-0 right-0 px-3"
@@ -1482,6 +1600,7 @@ export default function PDFViewer() {
                 >
                   <AIPopover
                     selections={[selection]}
+                    chatNumber={genChatNumber}
                     isMinimized={expandedChatId !== selection.id}
                     initialMessages={messages}
                     onClose={() => {
