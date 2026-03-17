@@ -158,9 +158,10 @@ export default function PDFViewer() {
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('pdfnotes-dark-mode');
-      return saved !== null ? saved === 'true' : true;
+      if (saved !== null) return saved === 'true';
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
     }
-    return true;
+    return true; // SSR fallback — dark is safer to avoid flash
   });
   const [viewportHeight, setViewportHeight] = useState(600);
 
