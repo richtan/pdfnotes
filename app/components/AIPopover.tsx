@@ -38,6 +38,7 @@ export function AIPopover({
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isRateLimited, setIsRateLimited] = useState(false);
   const [generatedTitle, setGeneratedTitle] = useState<string | null>(null);
   const hasBeenLoadingRef = useRef(false);
   const hasGeneratedTitleRef = useRef(false);
@@ -159,6 +160,7 @@ export function AIPopover({
     setInput('');
     setIsLoading(true);
     setError(null);
+    setIsRateLimited(false);
 
     // Build contexts array for API from selections
     const contexts = selections.map(sel => ({
@@ -184,6 +186,12 @@ export function AIPopover({
       });
 
       if (!response.ok) {
+        if (response.status === 429) {
+          setIsRateLimited(true);
+          // Keep the user's message in the chat — just stop processing
+          setIsLoading(false);
+          return;
+        }
         throw new Error('Failed to get response');
       }
 
@@ -434,6 +442,22 @@ export function AIPopover({
             )}
           </div>
         </div>
+
+        {/* Rate limit warning */}
+        {isRateLimited && (
+          <div className="px-3 py-2 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-sm shrink-0 flex items-center justify-between gap-2">
+            <span>Slow down! Please wait a moment before sending another message.</span>
+            <button
+              onClick={() => setIsRateLimited(false)}
+              className="shrink-0 hover:text-amber-800 dark:hover:text-amber-200 transition-colors"
+              aria-label="Dismiss"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
 
         {/* Error */}
         {error && (

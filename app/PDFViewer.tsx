@@ -295,6 +295,7 @@ export default function PDFViewer() {
       let currentPage = 1;
       pageRefs.current.forEach((ref, pageNum) => {
         const rect = ref.getBoundingClientRect();
+        if (rect.height < 50) return; // Page canvas hasn't rendered yet
         const pageTop = window.scrollY + rect.top;
         if (pageTop <= viewportMiddle) {
           currentPage = pageNum;
