@@ -412,7 +412,7 @@ export function AIPopover({
                   {message.role === 'user' ? (
                     <p className="text-sm">{message.content}</p>
                   ) : (
-                    <div className="text-sm prose prose-sm dark:prose-invert prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 max-w-none prose-p:text-foreground prose-headings:text-foreground prose-strong:text-foreground prose-code:text-foreground">
+                    <div className="text-sm prose prose-sm dark:prose-invert prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 max-w-none prose-p:text-foreground prose-headings:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-li:text-foreground">
                       <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{message.content}</Markdown>
                     </div>
                   )}
