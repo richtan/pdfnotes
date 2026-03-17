@@ -349,7 +349,7 @@ export function AIPopover({
                 {selections.map((sel) => (
                   <div
                     key={sel.id}
-                    className="flex items-center gap-2 px-2 py-1.5 bg-background rounded-md ring-1 ring-border text-xs group"
+                    className="flex items-center gap-2 px-2 py-1.5 bg-background rounded-md border border-foreground/20 text-xs group"
                   >
                     {/* Type icon */}
                     {sel.type === 'text' ? (
