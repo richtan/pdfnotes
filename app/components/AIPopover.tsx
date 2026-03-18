@@ -215,6 +215,9 @@ export function AIPopover({
         onMessagesUpdate(streamingMessages);
       }
 
+      // Flush any remaining buffered bytes from the decoder
+      assistantContent += decoder.decode();
+
       // Final update
       const finalMessages: ChatMessage[] = [...newMessages, { role: 'assistant', content: assistantContent }];
       setMessages(finalMessages);

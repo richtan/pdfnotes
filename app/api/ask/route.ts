@@ -218,7 +218,7 @@ export async function POST(request: NextRequest) {
       contents,
       config: {
         systemInstruction,
-        maxOutputTokens: 1024,
+        maxOutputTokens: 8192,
       },
     });
 
