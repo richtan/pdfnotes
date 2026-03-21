@@ -6,6 +6,7 @@ interface AreaSelectorProps {
   containerRef: HTMLDivElement | null;
   pageNumber: number;
   isDarkMode: boolean;
+  scale: number; // Bug G: needed to trigger canvas resize on zoom
   onSelect: (rect: DOMRect, pageNumber: number, imageBase64: string) => void;
   onCancel: () => void;
 }
@@ -21,14 +22,17 @@ export function AreaSelector({
   containerRef,
   pageNumber,
   isDarkMode,
+  scale,
   onSelect,
   onCancel,
 }: AreaSelectorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
   const [drawingRect, setDrawingRect] = useState<DrawingRect | null>(null);
+  // Bug L: use ref for guard check to avoid recreating handleMouseMove on every frame
+  const isDrawingRef = useRef(false);
 
   // Draw the selection rectangle
+  // Bug H: added isDarkMode to deps so colors update on toggle
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -36,21 +40,23 @@ export function AreaSelector({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Bug J: account for DPI scaling
+    const dpr = window.devicePixelRatio || 1;
 
-    // Only draw overlay and selection when actively drawing
+    // Clear canvas (use full canvas dimensions)
+    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+
     if (drawingRect) {
       // Draw semi-transparent overlay
       ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
 
       const x = Math.min(drawingRect.startX, drawingRect.currentX);
       const y = Math.min(drawingRect.startY, drawingRect.currentY);
       const width = Math.abs(drawingRect.currentX - drawingRect.startX);
       const height = Math.abs(drawingRect.currentY - drawingRect.startY);
 
-      // Clear the selection area (make it transparent)
+      // Clear the selection area
       ctx.clearRect(x, y, width, height);
 
       // Draw border
@@ -68,16 +74,25 @@ export function AreaSelector({
       ctx.fillRect(x - handleSize/2, y + height - handleSize/2, handleSize, handleSize);
       ctx.fillRect(x + width - handleSize/2, y + height - handleSize/2, handleSize, handleSize);
     }
-  }, [drawingRect]);
+  }, [drawingRect, isDarkMode]);
 
   // Set canvas size to match container
+  // Bug G: added scale to deps so canvas resizes on zoom
+  // Bug J: scale canvas for devicePixelRatio (Retina)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !containerRef) return;
 
-    canvas.width = containerRef.offsetWidth;
-    canvas.height = containerRef.offsetHeight;
-  }, [containerRef]);
+    const dpr = window.devicePixelRatio || 1;
+    const w = containerRef.offsetWidth;
+    const h = containerRef.offsetHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.scale(dpr, dpr);
+  }, [containerRef, scale]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -87,7 +102,7 @@ export function AreaSelector({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    setIsDrawing(true);
+    isDrawingRef.current = true;
     setDrawingRect({
       startX: x,
       startY: y,
@@ -96,8 +111,9 @@ export function AreaSelector({
     });
   }, []);
 
+  // Bug L: stable callback — uses ref for guard, functional setState for update
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !drawingRect) return;
+    if (!isDrawingRef.current) return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -107,11 +123,11 @@ export function AreaSelector({
     const y = e.clientY - rect.top;
 
     setDrawingRect(prev => prev ? { ...prev, currentX: x, currentY: y } : null);
-  }, [isDrawing, drawingRect]);
+  }, []);
 
   const handleMouseUp = useCallback(async () => {
-    if (!isDrawing || !drawingRect || !containerRef) {
-      setIsDrawing(false);
+    if (!isDrawingRef.current || !drawingRect || !containerRef) {
+      isDrawingRef.current = false;
       setDrawingRect(null);
       return;
     }
@@ -121,25 +137,22 @@ export function AreaSelector({
     const width = Math.abs(drawingRect.currentX - drawingRect.startX);
     const height = Math.abs(drawingRect.currentY - drawingRect.startY);
 
-    // Minimum size check - just reset without canceling the mode
+    // Minimum size check
     if (width < 10 || height < 10) {
-      setIsDrawing(false);
+      isDrawingRef.current = false;
       setDrawingRect(null);
       return;
     }
 
-    // Capture the selected region as an image
     try {
       const pageCanvas = containerRef.querySelector('canvas');
       if (!pageCanvas) {
         throw new Error('PDF canvas not found');
       }
 
-      // Get the scale factor between the display size and the actual canvas size
       const scaleX = pageCanvas.width / containerRef.offsetWidth;
       const scaleY = pageCanvas.height / containerRef.offsetHeight;
 
-      // Create a new canvas for the cropped region
       const croppedCanvas = document.createElement('canvas');
       croppedCanvas.width = width * scaleX;
       croppedCanvas.height = height * scaleY;
@@ -147,7 +160,6 @@ export function AreaSelector({
       const ctx = croppedCanvas.getContext('2d');
       if (!ctx) throw new Error('Could not get canvas context');
 
-      // Draw the cropped region
       ctx.drawImage(
         pageCanvas,
         x * scaleX,
@@ -162,6 +174,10 @@ export function AreaSelector({
 
       const imageBase64 = croppedCanvas.toDataURL('image/png');
 
+      // Bug O: release temp canvas memory immediately
+      croppedCanvas.width = 0;
+      croppedCanvas.height = 0;
+
       const selectionRect = new DOMRect(x, y, width, height);
       onSelect(selectionRect, pageNumber, imageBase64);
     } catch (error) {
@@ -169,9 +185,9 @@ export function AreaSelector({
       onCancel();
     }
 
-    setIsDrawing(false);
+    isDrawingRef.current = false;
     setDrawingRect(null);
-  }, [isDrawing, drawingRect, containerRef, pageNumber, onSelect, onCancel]);
+  }, [drawingRect, containerRef, pageNumber, onSelect, onCancel]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Escape') {

@@ -1,11 +1,41 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Markdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import type { Selection, ChatMessage } from '../hooks/useSelection';
+
+function formatChatAsMarkdown(title: string, sels: Selection[], msgs: ChatMessage[]): string {
+  let md = `# ${title}\n\n`;
+  if (sels.length > 0) {
+    md += `**Selections:**\n`;
+    sels.forEach(sel => {
+      if (sel.type === 'text' && sel.text) md += `- "${sel.text.slice(0, 100)}${sel.text.length > 100 ? '...' : ''}" (p.${sel.pageNumber})\n`;
+      else md += `- Screenshot (p.${sel.pageNumber})\n`;
+    });
+    md += '\n';
+  }
+  msgs.forEach(msg => {
+    md += msg.role === 'user' ? `**You:** ${msg.content}\n\n` : `**AI:** ${msg.content}\n\n`;
+  });
+  return md.trim();
+}
+
+function downloadAsFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function slugify(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'chat';
+}
 
 interface AIPopoverProps {
   selections: Selection[];
@@ -82,7 +112,7 @@ export function AIPopover({
   useEffect(() => {
     if (!hasGeneratedTitleRef.current && initialMessages.length >= 2 && primarySelection) {
       hasGeneratedTitleRef.current = true;
-      // Delay slightly to avoid too many API calls on initial render
+      const abortController = new AbortController();
       const timer = setTimeout(async () => {
         try {
           const response = await fetch('/api/generate-title', {
@@ -92,6 +122,7 @@ export function AIPopover({
               messages: initialMessages,
               context: primarySelection.text,
             }),
+            signal: abortController.signal,
           });
           if (response.ok) {
             const { title } = await response.json();
@@ -103,7 +134,7 @@ export function AIPopover({
           // Silently fail
         }
       }, 500);
-      return () => clearTimeout(timer);
+      return () => { clearTimeout(timer); abortController.abort(); };
     }
   }, [initialMessages, primarySelection]);
 
@@ -141,108 +172,6 @@ export function AIPopover({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [messages, onClose, onMessagesUpdate]);
 
-  const sendMessage = useCallback(async () => {
-    if (!input.trim() || isLoading || selections.length === 0) return;
-
-    // Reset auto-scroll when sending a new message
-    shouldAutoScrollRef.current = true;
-
-    const isFirstUserMessage = !messages.some(m => m.role === 'user');
-    const userMessage: ChatMessage = {
-      role: 'user',
-      content: input.trim(),
-      ...(isFirstUserMessage ? { selections: [...selections] } : {}),
-    };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
-    // Immediately update parent so message is saved even if user clicks away
-    onMessagesUpdate(newMessages);
-    setInput('');
-    setIsLoading(true);
-    setError(null);
-    setIsRateLimited(false);
-
-    // Build contexts array for API from selections
-    const contexts = selections.map(sel => ({
-      type: sel.type,
-      text: sel.text,
-      imageBase64: sel.imageBase64,
-      pageNumber: sel.pageNumber,
-    }));
-
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-
-    try {
-      const response = await fetch('/api/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: userMessage.content,
-          contexts,
-          conversationHistory: messages,
-        }),
-        signal: abortController.signal,
-      });
-
-      if (!response.ok) {
-        if (response.status === 429) {
-          setIsRateLimited(true);
-          // Keep the user's message in the chat — just stop processing
-          setIsLoading(false);
-          return;
-        }
-        throw new Error('Failed to get response');
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-      let assistantContent = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        assistantContent += chunk;
-
-        // Update messages with streaming content
-        const streamingMessages: ChatMessage[] = [...newMessages, { role: 'assistant', content: assistantContent }];
-        setMessages(streamingMessages);
-        // Keep parent updated during streaming so clicking away saves progress
-        onMessagesUpdate(streamingMessages);
-      }
-
-      // Flush any remaining buffered bytes from the decoder
-      assistantContent += decoder.decode();
-
-      // Final update
-      const finalMessages: ChatMessage[] = [...newMessages, { role: 'assistant', content: assistantContent }];
-      setMessages(finalMessages);
-      onMessagesUpdate(finalMessages);
-
-      // Generate title after first successful response (in background)
-      if (!hasGeneratedTitleRef.current && finalMessages.length >= 2) {
-        hasGeneratedTitleRef.current = true;
-        generateTitle(finalMessages);
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        // Aborted — keep partial messages as-is, don't show error
-      } else {
-        setError(err instanceof Error ? err.message : 'An error occurred');
-        // Remove the user message if there was an error
-        setMessages(messages);
-        onMessagesUpdate(messages);
-      }
-    } finally {
-      abortControllerRef.current = null;
-      setIsLoading(false);
-    }
-  }, [input, isLoading, messages, selections, onMessagesUpdate]);
-
   // Generate a title for the chat based on conversation content
   const generateTitle = useCallback(async (msgs: ChatMessage[]) => {
     if (!primarySelection) return;
@@ -266,6 +195,116 @@ export function AIPopover({
       // Silently fail - title generation is not critical
     }
   }, [primarySelection]);
+
+  // Core send logic shared by sendMessage and retrySend
+  const doSend = useCallback(async (userContent: string, currentMessages: ChatMessage[]) => {
+    shouldAutoScrollRef.current = true;
+
+    const isFirstUserMessage = !currentMessages.some(m => m.role === 'user');
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: userContent,
+      ...(isFirstUserMessage ? { selections: [...selections] } : {}),
+    };
+    const newMessages = [...currentMessages, userMessage];
+    setMessages(newMessages);
+    onMessagesUpdate(newMessages);
+    setIsLoading(true);
+    setError(null);
+    setIsRateLimited(false);
+
+    const contexts = selections.map(sel => ({
+      type: sel.type,
+      text: sel.text,
+      imageBase64: sel.imageBase64,
+      pageNumber: sel.pageNumber,
+    }));
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    try {
+      const response = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: userMessage.content,
+          contexts,
+          conversationHistory: currentMessages,
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        if (response.status === 429) {
+          setIsRateLimited(true);
+          setIsLoading(false);
+          return;
+        }
+        throw new Error('Failed to get response');
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let assistantContent = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        assistantContent += chunk;
+
+        const streamingMessages: ChatMessage[] = [...newMessages, { role: 'assistant', content: assistantContent }];
+        setMessages(streamingMessages);
+        onMessagesUpdate(streamingMessages);
+      }
+
+      assistantContent += decoder.decode();
+
+      // Guard against empty responses (Bug D)
+      if (!assistantContent.trim()) {
+        throw new Error('No response received. Please try again.');
+      }
+
+      const finalMessages: ChatMessage[] = [...newMessages, { role: 'assistant', content: assistantContent }];
+      setMessages(finalMessages);
+      onMessagesUpdate(finalMessages);
+
+      if (!hasGeneratedTitleRef.current && finalMessages.length >= 2) {
+        hasGeneratedTitleRef.current = true;
+        generateTitle(finalMessages);
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Aborted — keep partial messages as-is
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+        // Bug A fix: DON'T revert messages — keep user message visible for retry
+      }
+    } finally {
+      abortControllerRef.current = null;
+      setIsLoading(false);
+    }
+  }, [selections, onMessagesUpdate, generateTitle]);
+
+  const sendMessage = useCallback(() => {
+    if (!input.trim() || isLoading || selections.length === 0) return;
+    const trimmed = input.trim();
+    setInput('');
+    doSend(trimmed, messages);
+  }, [input, isLoading, selections, messages, doSend]);
+
+  // Retry the last failed user message
+  const retrySend = useCallback(() => {
+    if (isLoading || messages.length === 0) return;
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg.role !== 'user') return;
+    const withoutLast = messages.slice(0, -1);
+    doSend(lastMsg.content, withoutLast);
+  }, [isLoading, messages, doSend]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -319,6 +358,23 @@ export function AIPopover({
             {titleText}
           </span>
         </button>
+        {/* Export button — only when there are messages */}
+        {messages.length > 0 && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const md = formatChatAsMarkdown(titleText, selections, messages);
+              downloadAsFile(`${slugify(baseTitleText)}.md`, md);
+            }}
+            className="w-5 h-5 rounded hover:bg-foreground/10 text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors"
+            aria-label="Export chat"
+            title="Export as Markdown"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </button>
+        )}
         {/* Close button */}
         <button
           onClick={(e) => {
@@ -424,7 +480,7 @@ export function AIPopover({
                     <p className="text-sm">{message.content}</p>
                   ) : (
                     <div className="text-sm prose prose-sm dark:prose-invert prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 max-w-none prose-p:text-foreground prose-headings:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-li:text-foreground">
-                      <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{message.content}</Markdown>
+                      <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]} skipHtml>{message.content}</Markdown>
                     </div>
                   )}
                 </div>
@@ -462,10 +518,16 @@ export function AIPopover({
           </div>
         )}
 
-        {/* Error */}
+        {/* Error with retry */}
         {error && (
-          <div className="px-3 py-2 bg-destructive/10 text-destructive text-sm shrink-0">
-            {error}
+          <div className="px-3 py-2 bg-destructive/10 text-destructive text-sm shrink-0 flex items-center justify-between gap-2">
+            <span>{error}</span>
+            <button
+              onClick={retrySend}
+              className="shrink-0 px-2 py-0.5 rounded text-xs font-medium bg-destructive/20 hover:bg-destructive/30 transition-colors"
+            >
+              Retry
+            </button>
           </div>
         )}
 

@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "postinstall": "cp -r node_modules/pdfjs-dist/cmaps public/cmaps && cp -r node_modules/pdfjs-dist/standard_fonts public/standard_fonts"
   },
   "dependencies": {
@@ -18,7 +20,7 @@
     "@vercel/analytics": "^2.0.1",
     "@wojtekmaj/react-hooks": "^2.0.4",
     "katex": "^0.16.28",
-    "next": "16.1.3",
+    "next": "^16.2.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
@@ -28,12 +30,18 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4.7.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.3",
+    "jsdom": "^25.0.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

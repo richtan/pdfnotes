@@ -6,6 +6,12 @@ const PDFViewer = dynamic(() => import('./PDFViewer'), {
   ssr: false,
 });
 
+import { ErrorBoundary } from './components/ErrorBoundary';
+
 export default function Page() {
-  return <PDFViewer />;
+  return (
+    <ErrorBoundary>
+      <PDFViewer />
+    </ErrorBoundary>
+  );
 }

@@ -54,7 +54,6 @@ export function useSelection() {
   const [currentSelection, setCurrentSelection] = useState<Selection | null>(null);
   const [history, setHistory] = useState<SelectionHistory[]>([]);
   const [isAreaSelectMode, setIsAreaSelectMode] = useState(false);
-  const [nextChatNumber, setNextChatNumber] = useState(1);
 
   const setTextSelection = useCallback((
     text: string,
@@ -95,19 +94,15 @@ export function useSelection() {
   }, []);
 
   const addToHistory = useCallback((messages: ChatMessage[], chatId?: string, chatNumber?: number) => {
-    setHistory(prev => {
-      const newChatNumber = chatNumber ?? nextChatNumber;
-      return [...prev, {
-        id: chatId || crypto.randomUUID(),
-        chatNumber: newChatNumber,
-        messages
-      }];
-    });
-    // Only increment if we used the nextChatNumber
     if (chatNumber === undefined) {
-      setNextChatNumber(prev => prev + 1);
+      throw new Error('chatNumber is required — derive it from getNextChatNumber() before calling addToHistory');
     }
-  }, [nextChatNumber]);
+    setHistory(prev => [...prev, {
+      id: chatId || crypto.randomUUID(),
+      chatNumber,
+      messages,
+    }]);
+  }, []);
 
   const updateHistoryMessages = useCallback((chatId: string, messages: ChatMessage[]) => {
     setHistory(prev => prev.map(h =>
@@ -157,12 +152,6 @@ export function useSelection() {
     });
   }, []);
 
-  const getNextChatNumber = useCallback(() => {
-    const num = nextChatNumber;
-    setNextChatNumber(prev => prev + 1);
-    return num;
-  }, [nextChatNumber]);
-
   return {
     currentSelection,
     setCurrentSelection,
@@ -177,7 +166,5 @@ export function useSelection() {
     removeFromHistory,
     isAreaSelectMode,
     toggleAreaSelectMode,
-    nextChatNumber,
-    getNextChatNumber,
   };
 }

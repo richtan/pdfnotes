@@ -1,35 +1,34 @@
 'use client';
 
-import { useCallback, useId, useState, useRef, useEffect } from 'react';
+import { useCallback, useId, useMemo, useState, useRef, useEffect } from 'react';
 import { useResizeObserver } from '@wojtekmaj/react-hooks';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import {
-  DndContext,
-  closestCenter,
   KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
-  DragOverlay,
   type DragStartEvent,
   type DragEndEvent,
 } from '@dnd-kit/core';
 import {
   arrayMove,
-  SortableContext,
   sortableKeyboardCoordinates,
-  horizontalListSortingStrategy,
-  useSortable,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { useSelection, type ChatMessage, type Selection, type HistoryItem, getAllSelectionsFromChat, getPrimarySelection } from './hooks/useSelection';
-import { AIPopover } from './components/AIPopover';
+import { useSelection, getPrimarySelection } from './hooks/useSelection';
+import type { ChatMessage, Selection, HistoryItem } from './hooks/useSelection';
 import { AreaSelector } from './components/AreaSelector';
 import { ChatPicker } from './components/ChatPicker';
+import { EmptyTabView } from './components/EmptyTabView';
+import { SelectionHighlights } from './components/SelectionHighlights';
+import { Toolbar } from './components/Toolbar';
+import { ChatSidebar } from './components/ChatSidebar';
+import { type Tab, createEmptyTab, MAX_FILE_SIZE, PDF_WIDTH_PERCENT, SIDEBAR_WIDTH_PERCENT, EXPAND_CURRENT } from './types';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -42,106 +41,6 @@ const options = {
 };
 
 const resizeObserverOptions = {};
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
-const PDF_WIDTH_PERCENT = 65;
-const SIDEBAR_WIDTH_PERCENT = 35;
-const EXPAND_CURRENT = 'current'; // Special value meaning "expand the current selection's chat"
-
-interface Tab {
-  id: string;
-  file: File | string | null; // File object, URL string, or null for empty tab
-  name: string;
-  numPages?: number;
-  loadError?: string;
-  // Store chat state per tab
-  history: HistoryItem[];
-  currentSelection: Selection | null;
-  currentMessages: ChatMessage[];
-  expandedChatId: string;
-  // Store scroll position
-  scrollY: number;
-}
-
-// Sortable Tab Component
-interface SortableTabProps {
-  tab: Tab;
-  isActive: boolean;
-  onSelect: () => void;
-  onClose: (e: React.MouseEvent) => void;
-}
-
-function SortableTab({ tab, isActive, onSelect, onClose }: SortableTabProps) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: tab.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-    zIndex: isDragging ? 1 : 0,
-  };
-
-  return (
-    <button
-      ref={setNodeRef}
-      style={style}
-      {...attributes}
-      {...listeners}
-      onClick={onSelect}
-      className={`group flex items-center gap-1.5 h-7 pl-2.5 pr-1.5 rounded text-xs shrink-0 cursor-grab active:cursor-grabbing transition-colors ${
-        isActive
-          ? 'bg-muted text-foreground'
-          : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-      }`}
-    >
-      <svg className="w-3 h-3 shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-      </svg>
-      <span className="max-w-24 truncate" title={tab.name}>{tab.name}</span>
-      <span
-        onClick={onClose}
-        onPointerDown={(e) => e.stopPropagation()}
-        className="w-4 h-4 flex items-center justify-center rounded hover:bg-foreground/10 opacity-0 group-hover:opacity-100 transition-opacity"
-        role="button"
-        aria-label={`Close ${tab.name}`}
-      >
-        <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </span>
-    </button>
-  );
-}
-
-// Tab overlay shown while dragging
-function TabOverlay({ tab }: { tab: Tab }) {
-  return (
-    <div className="flex items-center gap-1.5 h-7 pl-2.5 pr-1.5 rounded text-xs bg-muted text-foreground shadow-lg border border-border">
-      <svg className="w-3 h-3 shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-      </svg>
-      <span className="max-w-24 truncate" title={tab.name}>{tab.name}</span>
-    </div>
-  );
-}
-
-// Create initial empty tab
-const createEmptyTab = (): Tab => ({
-  id: crypto.randomUUID(),
-  file: null,
-  name: 'New Tab',
-  history: [],
-  currentSelection: null,
-  currentMessages: [],
-  expandedChatId: EXPAND_CURRENT,
-  scrollY: 0,
-});
 
 const initialTab = createEmptyTab();
 
@@ -179,7 +78,6 @@ export default function PDFViewer() {
     toggleAreaSelectMode,
     setHistory,
     setCurrentSelection,
-    getNextChatNumber,
   } = useSelection();
 
   // Track the chat number for the current selection
@@ -195,6 +93,21 @@ export default function PDFViewer() {
   const isCurrentGeneratingRef = useRef(false);
   // Track selections that are still generating (kept mounted in background until done)
   const [generatingSelections, setGeneratingSelections] = useState<Map<string, { selection: Selection; messages: ChatMessage[]; chatNumber: number }>>(new Map());
+  // Safety timeouts to clean up generating selections that hang (Bug C)
+  const generatingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Derive next chat number from existing data (no stored counter — avoids skipping/double-increment)
+  const getNextChatNumber = useCallback(() => {
+    let max = 0;
+    for (const item of history) {
+      if (item.chatNumber > max) max = item.chatNumber;
+    }
+    if (currentChatNumber != null && currentChatNumber > max) max = currentChatNumber;
+    for (const gen of generatingSelections.values()) {
+      if (gen.chatNumber > max) max = gen.chatNumber;
+    }
+    return max + 1;
+  }, [history, currentChatNumber, generatingSelections]);
 
   // Page dropdown state
   const [currentVisiblePage, setCurrentVisiblePage] = useState(1);
@@ -242,15 +155,19 @@ export default function PDFViewer() {
     return () => window.removeEventListener('resize', updateHeight);
   }, []);
 
-  // Persist dark mode preference
+  // Persist dark mode preference and sync to <html> element (Bug K: matches layout.tsx FOUC script)
   useEffect(() => {
     localStorage.setItem('pdfnotes-dark-mode', String(isDarkMode));
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
   }, [isDarkMode]);
 
-  // Calculate chat count per page
-  const getChatsPerPage = useCallback(() => {
+  // Calculate chat count per page (Bug F: useMemo instead of useCallback)
+  const chatsPerPage = useMemo(() => {
     const counts = new Map<number, number>();
-    // Count from history - each chat counts once on its primary page (first selection's page)
     for (const item of history) {
       const primarySel = getPrimarySelection(item);
       if (primarySel) {
@@ -258,12 +175,10 @@ export default function PDFViewer() {
         counts.set(page, (counts.get(page) || 0) + 1);
       }
     }
-    // Count current selection if exists
     if (currentSelection) {
       const page = currentSelection.pageNumber;
       counts.set(page, (counts.get(page) || 0) + 1);
     }
-    // Count pending selection if exists
     if (pendingSelection) {
       const page = pendingSelection.pageNumber;
       counts.set(page, (counts.get(page) || 0) + 1);
@@ -369,9 +284,11 @@ export default function PDFViewer() {
     setExpandedChatId(tab.expandedChatId);
     setActiveTabId(tabId);
 
-    // Restore scroll position after a brief delay to let the DOM update
+    // Restore scroll position after layout completes (double rAF for reliability)
     requestAnimationFrame(() => {
-      window.scrollTo(0, tab.scrollY);
+      requestAnimationFrame(() => {
+        window.scrollTo(0, tab.scrollY);
+      });
     });
   }, [activeTabId, tabs, saveCurrentTabState, setHistory, setCurrentSelection]);
 
@@ -797,18 +714,30 @@ export default function PDFViewer() {
     if (currentSelection && currentMessagesRef.current.length > 0) {
       if (isCurrentGeneratingRef.current) {
         // Keep generating selection mounted in background
+        const selId = currentSelection.id;
         setGeneratingSelections(prev => {
           const next = new Map(prev);
-          next.set(currentSelection.id, {
+          next.set(selId, {
             selection: currentSelection,
             messages: [...currentMessagesRef.current],
-            chatNumber: currentChatNumber!,
+            chatNumber: currentChatNumber ?? 0,
           });
           return next;
         });
+        // Safety timeout: clean up if generation hangs for 5 minutes (Bug C)
+        const timeout = setTimeout(() => {
+          setGeneratingSelections(prev => {
+            if (!prev.has(selId)) return prev;
+            const next = new Map(prev);
+            next.delete(selId);
+            return next;
+          });
+          generatingTimeoutsRef.current.delete(selId);
+        }, 5 * 60 * 1000);
+        generatingTimeoutsRef.current.set(selId, timeout);
       } else {
         // Not generating, move directly to history (with current chat number)
-        addToHistory(currentMessagesRef.current, undefined, currentChatNumber ?? undefined);
+        addToHistory(currentMessagesRef.current, undefined, currentChatNumber ?? 0);
       }
     }
 
@@ -837,7 +766,7 @@ export default function PDFViewer() {
   const handlePopoverClose = useCallback(() => {
     // If there are messages, add to history before clearing
     if (currentSelection && currentMessagesRef.current.length > 0) {
-      addToHistory(currentMessagesRef.current, undefined, currentChatNumber ?? undefined);
+      addToHistory(currentMessagesRef.current, undefined, currentChatNumber ?? 0);
     }
     currentMessagesRef.current = [];
     isCurrentGeneratingRef.current = false;
@@ -853,12 +782,16 @@ export default function PDFViewer() {
 
   // Handle when a background generating selection finishes
   const handleGeneratingComplete = useCallback((selectionId: string, messages: ChatMessage[]) => {
+    // Clear safety timeout (Bug C)
+    const existingTimeout = generatingTimeoutsRef.current.get(selectionId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      generatingTimeoutsRef.current.delete(selectionId);
+    }
     setGeneratingSelections(prev => {
       const item = prev.get(selectionId);
       if (item) {
-        // Move to history - messages should already have selections attached
         addToHistory(messages, undefined, item.chatNumber);
-        // Remove from generating
         const next = new Map(prev);
         next.delete(selectionId);
         return next;
@@ -903,6 +836,30 @@ export default function PDFViewer() {
   const handleCurrentMessagesUpdate = useCallback((messages: ChatMessage[]) => {
     currentMessagesRef.current = messages;
   }, []);
+
+  // Handlers for ChatSidebar's generating selections
+  const handleRemoveGenerating = useCallback((selectionId: string) => {
+    const existingTimeout = generatingTimeoutsRef.current.get(selectionId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      generatingTimeoutsRef.current.delete(selectionId);
+    }
+    setGeneratingSelections(prev => {
+      const next = new Map(prev);
+      next.delete(selectionId);
+      return next;
+    });
+  }, []);
+
+  const handleGeneratingLoadingDone = useCallback((selectionId: string) => {
+    setGeneratingSelections(prev => {
+      const genItem = prev.get(selectionId);
+      if (genItem) {
+        handleGeneratingComplete(selectionId, genItem.messages);
+      }
+      return prev;
+    });
+  }, [handleGeneratingComplete]);
 
   // Zoom handler that preserves scroll position
   const handleZoom = useCallback((newScale: number) => {
@@ -1024,9 +981,29 @@ export default function PDFViewer() {
     return { top, left, showAbove };
   }, [containerRef, viewportHeight]);
 
+  // Keyboard shortcuts (must be after all callbacks are defined)
+  useKeyboardShortcuts(useMemo(() => ({
+    onNextTab: () => {
+      const idx = tabs.findIndex(t => t.id === activeTabId);
+      if (idx >= 0 && idx < tabs.length - 1) switchToTab(tabs[idx + 1].id);
+    },
+    onPrevTab: () => {
+      const idx = tabs.findIndex(t => t.id === activeTabId);
+      if (idx > 0) switchToTab(tabs[idx - 1].id);
+    },
+    onToggleAreaSelect: () => toggleAreaSelectMode(),
+    onClearSelection: () => {
+      if (pendingSelection) {
+        setPendingSelection(null);
+        return;
+      }
+      setExpandedChatId('none');
+    },
+  }), [tabs, activeTabId, switchToTab, toggleAreaSelectMode, pendingSelection]));
+
   return (
     <div
-      className={`min-h-screen ${isDarkMode ? 'dark' : ''} bg-background`}
+      className="min-h-screen bg-background"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -1045,244 +1022,55 @@ export default function PDFViewer() {
       )}
 
       {/* Toolbar */}
-      <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-sm">
-        <div className="px-4 h-12 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            <h1 className="text-base font-semibold text-foreground tracking-tight shrink-0">
-              PDF Notes
-            </h1>
-
-            {/* Divider */}
-            <div className="h-4 w-px bg-border shrink-0" />
-
-            {/* Tabs */}
-            <div className="flex items-center gap-0.5 min-w-0 overflow-x-auto">
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
-              >
-                <SortableContext
-                  items={tabs.map(t => t.id)}
-                  strategy={horizontalListSortingStrategy}
-                >
-                  <div className="flex items-center gap-0.5">
-                    {tabs.map((tab) => (
-                      <SortableTab
-                        key={tab.id}
-                        tab={tab}
-                        isActive={tab.id === activeTabId}
-                        onSelect={() => switchToTab(tab.id)}
-                        onClose={(e) => closeTab(tab.id, e)}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-                <DragOverlay>
-                  {activeId ? (
-                    <TabOverlay tab={tabs.find(t => t.id === activeId)!} />
-                  ) : null}
-                </DragOverlay>
-              </DndContext>
-
-              {/* Add tab button */}
-              <button
-                onClick={() => {
-                  saveCurrentTabState();
-                  const newTab = createEmptyTab();
-                  setTabs(prev => [...prev, newTab]);
-                  setActiveTabId(newTab.id);
-                  setHistory([]);
-                  setCurrentSelection(null);
-                  currentMessagesRef.current = [];
-                  setExpandedChatId(EXPAND_CURRENT);
-                  setUrlInput('');
-                }}
-                className="h-7 w-7 rounded hover:bg-muted text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors shrink-0"
-                title="New Tab"
-                aria-label="New tab"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {activeTab && (
-            <div className="flex items-center gap-1">
-              {/* Page dropdown */}
-              {activeTab.numPages && activeTab.numPages > 1 && (
-                <>
-                  <div ref={dropdownRef} className="relative">
-                    <button
-                      onClick={() => setIsPageDropdownOpen(!isPageDropdownOpen)}
-                      className="h-8 pl-3 pr-8 text-sm bg-transparent border border-border rounded-md text-foreground cursor-pointer hover:bg-muted transition-colors focus:outline-none focus:ring-2 focus:ring-ring flex items-center gap-2"
-                    >
-                      <span>Page {currentVisiblePage}</span>
-                      <span className="text-muted-foreground">/ {activeTab.numPages}</span>
-                    </button>
-                    <svg
-                      className={`absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none transition-transform duration-200 ${isPageDropdownOpen ? 'rotate-180' : ''}`}
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 9l-7 7-7-7" />
-                    </svg>
-
-                    {/* Dropdown menu */}
-                    {isPageDropdownOpen && activeTab.numPages && (
-                      <div className="absolute top-full left-0 mt-1 min-w-full max-h-64 overflow-y-auto bg-background border border-border rounded-md shadow-lg z-50 py-1 animate-fadeIn">
-                        {Array.from({ length: activeTab.numPages }, (_, i) => {
-                          const pageNum = i + 1;
-                          const chatCount = getChatsPerPage().get(pageNum) || 0;
-                          const isCurrentPage = pageNum === currentVisiblePage;
-                          return (
-                            <button
-                              key={pageNum}
-                              onClick={() => scrollToPage(pageNum)}
-                              className={`w-full px-3 py-1.5 text-sm text-left flex items-center justify-between transition-colors ${
-                                isCurrentPage
-                                  ? 'bg-muted text-foreground'
-                                  : 'text-foreground hover:bg-muted/50'
-                              }`}
-                            >
-                              <span>Page {pageNum}</span>
-                              {chatCount > 0 && (
-                                <span className="ml-2 px-1.5 py-0.5 text-xs bg-primary text-primary-foreground rounded-full tabular-nums">
-                                  {chatCount}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                  {/* Divider */}
-                  <div className="h-4 w-px bg-border mx-2" />
-                </>
-              )}
-
-              {/* Zoom controls */}
-              <div className="flex items-center">
-                <button
-                  onClick={() => handleZoom(Math.max(0.5, scale - 0.1))}
-                  className="h-8 w-8 rounded-md hover:bg-muted text-foreground flex items-center justify-center transition-colors"
-                  aria-label="Zoom out"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 12H4" />
-                  </svg>
-                </button>
-                <span className="text-sm text-foreground min-w-[44px] text-center tabular-nums">
-                  {Math.round(scale * 100)}%
-                </span>
-                <button
-                  onClick={() => handleZoom(Math.min(2, scale + 0.1))}
-                  className="h-8 w-8 rounded-md hover:bg-muted text-foreground flex items-center justify-center transition-colors"
-                  aria-label="Zoom in"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* Screenshot tool */}
-              <button
-                onClick={() => toggleAreaSelectMode()}
-                className={`h-8 px-3 rounded-md flex items-center gap-2 text-sm font-medium transition-colors border ${
-                  isAreaSelectMode
-                    ? 'bg-primary text-primary-foreground border-primary'
-                    : 'bg-background hover:bg-muted text-foreground border-border'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                {isAreaSelectMode ? 'Cancel' : 'Screenshot'}
-              </button>
-
-              {/* Dark mode toggle */}
-              <button
-                onClick={() => setIsDarkMode(d => !d)}
-                className="h-8 w-8 rounded-md hover:bg-muted text-foreground flex items-center justify-center transition-colors"
-                aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-              >
-                {isDarkMode ? (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+      <Toolbar
+        tabBarProps={{
+          tabs,
+          activeTabId,
+          sensors,
+          activeId,
+          onSwitchTab: switchToTab,
+          onCloseTab: closeTab,
+          onDragStart: handleDragStart,
+          onDragEnd: handleDragEnd,
+          onNewTab: () => {
+            saveCurrentTabState();
+            const newTab = createEmptyTab();
+            setTabs(prev => [...prev, newTab]);
+            setActiveTabId(newTab.id);
+            setHistory([]);
+            setCurrentSelection(null);
+            currentMessagesRef.current = [];
+            setExpandedChatId(EXPAND_CURRENT);
+            setUrlInput('');
+          },
+        }}
+        activeTab={activeTab}
+        currentVisiblePage={currentVisiblePage}
+        isPageDropdownOpen={isPageDropdownOpen}
+        dropdownRef={dropdownRef}
+        onTogglePageDropdown={() => setIsPageDropdownOpen(!isPageDropdownOpen)}
+        onScrollToPage={scrollToPage}
+        chatsPerPage={chatsPerPage}
+        scale={scale}
+        onZoom={handleZoom}
+        isAreaSelectMode={isAreaSelectMode}
+        onToggleAreaSelect={() => toggleAreaSelectMode()}
+        isDarkMode={isDarkMode}
+        onToggleDarkMode={() => setIsDarkMode(d => !d)}
+      />
 
 
       {/* Main content */}
       <main className="relative">
         {!activeTab || !activeTab.file ? (
           /* Empty tab - show upload UI */
-          <div className="flex flex-col items-center justify-center py-32 text-center">
-            <div className="w-16 h-16 mb-6 text-muted-foreground/30">
-              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            </div>
-            <h2 className="text-lg font-medium text-foreground mb-1">
-              Open a document
-            </h2>
-            <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-              Drop a PDF, upload a file, or paste a URL to start asking AI-powered questions
-            </p>
-            <div className="flex flex-col items-center gap-4 w-full max-w-sm">
-              <label
-                htmlFor={fileId}
-                className="cursor-pointer h-10 px-6 bg-primary hover:bg-primary/90 text-primary-foreground rounded-md text-sm font-medium transition-colors inline-flex items-center"
-              >
-                Upload PDF
-              </label>
-              <input
-                id={fileId}
-                onChange={onFileChange}
-                type="file"
-                accept=".pdf"
-                multiple
-                className="hidden"
-              />
-              <div className="flex items-center gap-3 w-full">
-                <div className="flex-1 h-px bg-border" />
-                <span className="text-xs text-muted-foreground">or</span>
-                <div className="flex-1 h-px bg-border" />
-              </div>
-              <form onSubmit={onUrlSubmit} className="flex items-center gap-2 w-full">
-                <input
-                  type="url"
-                  value={urlInput}
-                  onChange={(e) => setUrlInput(e.target.value)}
-                  placeholder="Paste PDF URL..."
-                  className="flex-1 h-10 px-3 text-sm bg-muted/50 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-ring text-foreground placeholder:text-muted-foreground"
-                />
-                <button
-                  type="submit"
-                  disabled={!urlInput.trim()}
-                  className="h-10 px-4 bg-secondary hover:bg-secondary/80 disabled:opacity-40 text-secondary-foreground rounded-md text-sm font-medium transition-colors"
-                >
-                  Open
-                </button>
-              </form>
-            </div>
-          </div>
+          <EmptyTabView
+            fileId={fileId}
+            onFileChange={onFileChange}
+            urlInput={urlInput}
+            onUrlInputChange={setUrlInput}
+            onUrlSubmit={onUrlSubmit}
+          />
         ) : (
           <div className="flex w-full">
             {/* PDF Document area - render all tabs, show only active */}
@@ -1293,19 +1081,10 @@ export default function PDFViewer() {
               onMouseDown={handlePdfMouseDown}
               onMouseUp={handleTextSelection}
             >
-              {tabs.filter(tab => tab.file).map((tab) => {
-                const isActive = tab.id === activeTabId;
+              {tabs.filter(tab => tab.file && tab.id === activeTabId).map((tab) => {
                 return (
-                  <div
-                    key={tab.id}
-                    style={{
-                      visibility: isActive ? 'visible' : 'hidden',
-                      position: isActive ? 'relative' : 'absolute',
-                      top: isActive ? undefined : 0,
-                      left: isActive ? undefined : 0,
-                      pointerEvents: isActive ? 'auto' : 'none',
-                    }}
-                  >
+                  <div key={tab.id}>
+                    {/* Bug I fix: only mount active tab's PDF to save memory */}
                     {tab.loadError ? (
                       <div className="flex flex-col items-center justify-center py-32 text-center">
                         <svg className="w-12 h-12 text-destructive mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1337,13 +1116,10 @@ export default function PDFViewer() {
                       className="flex flex-col items-center gap-6"
                       loading={
                         <div className="flex items-center justify-center py-32">
-                          <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                            <svg className="w-8 h-8 animate-spin" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                            </svg>
-                            <p className="text-sm">Loading PDF...</p>
-                          </div>
+                          <svg className="w-6 h-6 animate-spin text-muted-foreground" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
                         </div>
                       }
                     >
@@ -1352,7 +1128,7 @@ export default function PDFViewer() {
                         return (
                           <div
                             key={`page_${pageNum}`}
-                            ref={isActive ? setPageRef(pageNum) : undefined}
+                            ref={setPageRef(pageNum)}
                             className="relative shadow-sm ring-1 ring-border/50 rounded-lg overflow-hidden bg-white"
                           >
                             <Page
@@ -1360,177 +1136,33 @@ export default function PDFViewer() {
                               width={pageWidth}
                               renderTextLayer={true}
                               renderAnnotationLayer={true}
+                              canvasBackground="white"
                             />
 
-                            {/* Area selector overlay - only on active tab */}
-                            {isActive && isAreaSelectMode && (
+                            {/* Area selector overlay */}
+                            {isAreaSelectMode && (
                               <AreaSelector
                                 containerRef={pageRefs.current.get(pageNum) || null}
                                 pageNumber={pageNum}
                                 isDarkMode={isDarkMode}
+                                scale={scale}
                                 onSelect={handleAreaSelect}
                                 onCancel={handleAreaCancel}
                               />
                             )}
 
-                            {/* Selection highlights - only on active tab */}
-                            {isActive && (() => {
-                              // Helper to check if selection has rects on this page
-                              const hasRectsOnPage = (sel: typeof currentSelection) => {
-                                if (!sel) return false;
-                                // Check rectsByPage first, then fall back to pageNumber
-                                if (sel.rectsByPage?.has(pageNum)) return true;
-                                return sel.pageNumber === pageNum;
-                              };
-
-                              // Get rects for a selection on this page
-                              const getRectsForPage = (sel: NonNullable<typeof currentSelection>) => {
-                                // Use rectsByPage if available for this page
-                                if (sel.rectsByPage?.has(pageNum)) {
-                                  return sel.rectsByPage.get(pageNum)!;
-                                }
-                                // Fall back to rects array if on primary page
-                                if (sel.pageNumber === pageNum) {
-                                  return sel.rects || [sel.rect];
-                                }
-                                return [];
-                              };
-
-                              // Color palette for different chats
-                              const CHAT_COLORS = [
-                                { focused: 'bg-blue-500/30', unfocused: 'bg-blue-400/15 hover:bg-blue-400/25', areaFocused: 'border-blue-500 bg-blue-500/10', areaUnfocused: 'border-blue-400/50 bg-blue-400/5 hover:bg-blue-400/10' },
-                                { focused: 'bg-violet-500/30', unfocused: 'bg-violet-400/15 hover:bg-violet-400/25', areaFocused: 'border-violet-500 bg-violet-500/10', areaUnfocused: 'border-violet-400/50 bg-violet-400/5 hover:bg-violet-400/10' },
-                                { focused: 'bg-emerald-500/30', unfocused: 'bg-emerald-400/15 hover:bg-emerald-400/25', areaFocused: 'border-emerald-500 bg-emerald-500/10', areaUnfocused: 'border-emerald-400/50 bg-emerald-400/5 hover:bg-emerald-400/10' },
-                                { focused: 'bg-rose-500/30', unfocused: 'bg-rose-400/15 hover:bg-rose-400/25', areaFocused: 'border-rose-500 bg-rose-500/10', areaUnfocused: 'border-rose-400/50 bg-rose-400/5 hover:bg-rose-400/10' },
-                              ];
-
-                              // Determine which selection to highlight based on focused chat
-                              // isPending means it's a pending selection (dashed border)
-                              const selectionsToHighlight: Array<{ selection: typeof currentSelection, isFocused: boolean, isPending?: boolean, chatId?: string, chatNumber?: number }> = [];
-                              const renderedIds = new Set<string>();
-
-                              // Pending selection - distinct dashed style
-                              if (pendingSelection && hasRectsOnPage(pendingSelection) && !renderedIds.has(pendingSelection.id)) {
-                                renderedIds.add(pendingSelection.id);
-                                selectionsToHighlight.push({
-                                  selection: pendingSelection,
-                                  isFocused: true,
-                                  isPending: true,
-                                });
-                              }
-
-                              // Current selection - highlighted when its chat is focused (expandedChatId === EXPAND_CURRENT)
-                              if (currentSelection && hasRectsOnPage(currentSelection) && !renderedIds.has(currentSelection.id)) {
-                                renderedIds.add(currentSelection.id);
-                                selectionsToHighlight.push({
-                                  selection: currentSelection,
-                                  isFocused: expandedChatId === EXPAND_CURRENT,
-                                  chatNumber: currentChatNumber ?? 0,
-                                });
-                              }
-
-                              // History items - highlighted when their chat is focused
-                              // Each history item has selections attached to user messages
-                              history.forEach(item => {
-                                const allSelections = getAllSelectionsFromChat(item);
-                                allSelections.forEach(sel => {
-                                  if (hasRectsOnPage(sel) && !renderedIds.has(sel.id)) {
-                                    renderedIds.add(sel.id);
-                                    selectionsToHighlight.push({
-                                      selection: sel,
-                                      isFocused: expandedChatId === item.id,
-                                      chatId: item.id,
-                                      chatNumber: item.chatNumber,
-                                    });
-                                  }
-                                });
-                              });
-
-                              // Generating selections (background) - highlighted when their chat is focused
-                              generatingSelections.forEach(({ selection: genSelection, chatNumber: genChatNum }) => {
-                                if (hasRectsOnPage(genSelection) && !renderedIds.has(genSelection.id)) {
-                                  renderedIds.add(genSelection.id);
-                                  selectionsToHighlight.push({
-                                    selection: genSelection,
-                                    isFocused: expandedChatId === genSelection.id,
-                                    chatNumber: genChatNum,
-                                  });
-                                }
-                              });
-
-                              return selectionsToHighlight.map(({ selection, isFocused, isPending, chatId, chatNumber: cn }) => {
-                                if (!selection) return null;
-
-                                const handleMouseDown = (e: React.MouseEvent) => {
-                                  e.stopPropagation(); // Prevent handlePdfMouseDown from running
-                                };
-                                const handleClick = (e: React.MouseEvent) => {
-                                  e.stopPropagation();
-                                  // Don't change focus for pending selections
-                                  if (isPending) return;
-                                  // For currentSelection, expandedChatId should be EXPAND_CURRENT
-                                  // For history items, it should be the chat id
-                                  const isCurrentSel = currentSelection?.id === selection.id;
-                                  setExpandedChatId(isCurrentSel ? EXPAND_CURRENT : (chatId || selection.id));
-                                };
-
-                                // Zoom ratio for accurate highlight positioning at different zoom levels
-                                const zoomRatio = selection.scale ? scale / selection.scale : 1;
-
-                                // Pick color based on chat number
-                                const colorIdx = (cn ?? 0) % CHAT_COLORS.length;
-                                const colors = CHAT_COLORS[colorIdx];
-
-                                // Pending selections have dashed amber border (waiting for chat assignment)
-                                const getAreaClass = () => {
-                                  if (isPending) return 'border-dashed border-2 border-amber-500 bg-amber-500/10';
-                                  if (isFocused) return `${colors.areaFocused}`;
-                                  return `${colors.areaUnfocused}`;
-                                };
-
-                                const getTextClass = () => {
-                                  if (isPending) return 'bg-amber-500/20';
-                                  if (isFocused) return colors.focused;
-                                  return colors.unfocused;
-                                };
-
-                                if (selection.type === 'area') {
-                                  return (
-                                    <div
-                                      key={selection.id}
-                                      data-selection-highlight
-                                      onMouseDown={handleMouseDown}
-                                      onClick={handleClick}
-                                      className={`absolute cursor-pointer rounded-sm border-2 transition-colors z-10 ${getAreaClass()}`}
-                                      style={{
-                                        left: selection.rect.x * zoomRatio,
-                                        top: selection.rect.y * zoomRatio,
-                                        width: selection.rect.width * zoomRatio,
-                                        height: selection.rect.height * zoomRatio,
-                                      }}
-                                    />
-                                  );
-                                } else {
-                                  // Text selection - render rects for this page
-                                  const rectsForThisPage = getRectsForPage(selection);
-                                  return rectsForThisPage.map((r, i) => (
-                                    <div
-                                      key={`${selection.id}-${pageNum}-${i}`}
-                                      data-selection-highlight
-                                      onMouseDown={handleMouseDown}
-                                      onClick={handleClick}
-                                      className={`absolute cursor-pointer transition-colors z-10 ${getTextClass()}`}
-                                      style={{
-                                        left: r.x * zoomRatio,
-                                        top: r.y * zoomRatio,
-                                        width: r.width * zoomRatio,
-                                        height: r.height * zoomRatio,
-                                      }}
-                                    />
-                                  ));
-                                }
-                              });
-                            })()}
+                            {/* Selection highlights */}
+                            <SelectionHighlights
+                              pageNum={pageNum}
+                              scale={scale}
+                              currentSelection={currentSelection}
+                              pendingSelection={pendingSelection}
+                              expandedChatId={expandedChatId}
+                              currentChatNumber={currentChatNumber}
+                              history={history}
+                              generatingSelections={generatingSelections}
+                              onExpandChat={setExpandedChatId}
+                            />
                           </div>
                         );
                       }) : null}
@@ -1562,108 +1194,26 @@ export default function PDFViewer() {
               })()}
             </div>
 
-            {/* Comments sidebar - scrolls with PDF */}
-            <div
-              className="shrink-0 relative"
-              style={{ width: `${SIDEBAR_WIDTH_PERCENT}%` }}
-            >
-              {/* Current selection */}
-              {currentSelection && (
-                <div
-                  className="absolute left-0 right-0 px-3"
-                  style={{
-                    top: `${getSelectionYPosition(currentSelection) + 24 + currentSelection.rect.height / 2}px`,
-                    transform: 'translateY(-50%)',
-                  }}
-                >
-                  <AIPopover
-                    key={currentSelection.id}
-                    selections={[currentSelection]}
-                    chatNumber={currentChatNumber ?? undefined}
-                    maxHeight={expandedChatId === EXPAND_CURRENT ? Math.min(viewportHeight - 150, 500) : undefined}
-                    isMinimized={expandedChatId !== EXPAND_CURRENT}
-                    onClose={handlePopoverClose}
-                    onMessagesUpdate={handleCurrentMessagesUpdate}
-                    onToggleMinimize={() => setExpandedChatId(expandedChatId === EXPAND_CURRENT ? 'none' : EXPAND_CURRENT)}
-                    onLoadingChange={handleCurrentLoadingChange}
-                  />
-                </div>
-              )}
-
-              {/* Background generating selections (hidden but mounted to continue generation) */}
-              {Array.from(generatingSelections.values()).map(({ selection, messages, chatNumber: genChatNumber }) => (
-                <div
-                  key={`generating-${selection.id}`}
-                  className="absolute left-0 right-0 px-3"
-                  style={{
-                    top: `${getSelectionYPosition(selection) + 24 + selection.rect.height / 2}px`,
-                    transform: 'translateY(-50%)',
-                  }}
-                >
-                  <AIPopover
-                    selections={[selection]}
-                    chatNumber={genChatNumber}
-                    isMinimized={expandedChatId !== selection.id}
-                    initialMessages={messages}
-                    onClose={() => {
-                      // Remove from generating and don't add to history
-                      setGeneratingSelections(prev => {
-                        const next = new Map(prev);
-                        next.delete(selection.id);
-                        return next;
-                      });
-                    }}
-                    onMessagesUpdate={(msgs) => handleGeneratingMessagesUpdate(selection.id, msgs)}
-                    onToggleMinimize={() => setExpandedChatId(
-                      expandedChatId === selection.id ? 'none' : selection.id
-                    )}
-                    onLoadingChange={(loading) => {
-                      if (!loading) {
-                        // Generation finished, move to history
-                        const genItem = generatingSelections.get(selection.id);
-                        if (genItem) {
-                          handleGeneratingComplete(selection.id, genItem.messages);
-                        }
-                      }
-                    }}
-                  />
-                </div>
-              ))}
-
-              {/* History items */}
-              {history.map((item) => {
-                // Position based on first selection in the chat
-                const primarySel = getPrimarySelection(item);
-                if (!primarySel) return null;
-
-                const allSelections = getAllSelectionsFromChat(item);
-
-                return (
-                  <div
-                    key={item.id}
-                    className="absolute left-0 right-0 px-3"
-                    style={{
-                      top: `${getSelectionYPosition(primarySel) + 24 + primarySel.rect.height / 2}px`,
-                      transform: 'translateY(-50%)',
-                    }}
-                  >
-                    <AIPopover
-                      selections={allSelections}
-                      chatNumber={item.chatNumber}
-                      maxHeight={expandedChatId === item.id ? Math.min(viewportHeight - 150, 500) : undefined}
-                      isMinimized={expandedChatId !== item.id}
-                      initialMessages={item.messages}
-                      onClose={() => removeFromHistory(item.id)}
-                      onMessagesUpdate={(messages) => updateHistoryMessages(item.id, messages)}
-                      onToggleMinimize={() => setExpandedChatId(
-                        expandedChatId === item.id ? 'none' : item.id
-                      )}
-                      onRemoveSelection={(selectionId) => removeSelectionFromChat(item.id, selectionId)}
-                    />
-                  </div>
-                );
-              })}
-            </div>
+            {/* Comments sidebar */}
+            <ChatSidebar
+              currentSelection={currentSelection}
+              currentChatNumber={currentChatNumber}
+              expandedChatId={expandedChatId}
+              viewportHeight={viewportHeight}
+              generatingSelections={generatingSelections}
+              history={history}
+              getSelectionYPosition={getSelectionYPosition}
+              onPopoverClose={handlePopoverClose}
+              onCurrentMessagesUpdate={handleCurrentMessagesUpdate}
+              onToggleExpand={setExpandedChatId}
+              onCurrentLoadingChange={handleCurrentLoadingChange}
+              onRemoveGenerating={handleRemoveGenerating}
+              onGeneratingMessagesUpdate={handleGeneratingMessagesUpdate}
+              onGeneratingLoadingChange={handleGeneratingLoadingDone}
+              onRemoveHistory={removeFromHistory}
+              onUpdateHistoryMessages={updateHistoryMessages}
+              onRemoveSelectionFromChat={removeSelectionFromChat}
+            />
           </div>
         )}
       </main>
